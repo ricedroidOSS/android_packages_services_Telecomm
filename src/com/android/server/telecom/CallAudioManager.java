@@ -42,7 +42,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private final String LOG_TAG = CallAudioManager.class.getSimpleName();
 
-    private final LinkedHashSet<Call> mActiveDialingOrConnectingCalls;
+    private final LinkedHashSet<Call> mActiveOrDialingCalls;
+    private final LinkedHashSet<Call> mConnectingCalls;
     private final LinkedHashSet<Call> mRingingCalls;
     private final LinkedHashSet<Call> mHoldingCalls;
     private final LinkedHashSet<Call> mAudioProcessingCalls;
@@ -71,16 +72,17 @@ public class CallAudioManager extends CallsManagerListenerBase {
             RingbackPlayer ringbackPlayer,
             BluetoothStateReceiver bluetoothStateReceiver,
             DtmfLocalTonePlayer dtmfLocalTonePlayer) {
-        mActiveDialingOrConnectingCalls = new LinkedHashSet<>(1);
+        mActiveOrDialingCalls = new LinkedHashSet<>(1);
+        mConnectingCalls = new LinkedHashSet<>(1);
         mRingingCalls = new LinkedHashSet<>(1);
         mHoldingCalls = new LinkedHashSet<>(1);
         mAudioProcessingCalls = new LinkedHashSet<>(1);
         mCalls = new HashSet<>();
         mCallStateToCalls = new SparseArray<LinkedHashSet<Call>>() {{
-            put(CallState.CONNECTING, mActiveDialingOrConnectingCalls);
-            put(CallState.ACTIVE, mActiveDialingOrConnectingCalls);
-            put(CallState.DIALING, mActiveDialingOrConnectingCalls);
-            put(CallState.PULLING, mActiveDialingOrConnectingCalls);
+            put(CallState.CONNECTING, mConnectingCalls);
+            put(CallState.ACTIVE, mActiveOrDialingCalls);
+            put(CallState.DIALING, mActiveOrDialingCalls);
+            put(CallState.PULLING, mActiveOrDialingCalls);
             put(CallState.RINGING, mRingingCalls);
             put(CallState.ON_HOLD, mHoldingCalls);
             put(CallState.SIMULATED_RINGING, mRingingCalls);
@@ -528,9 +530,14 @@ public class CallAudioManager extends CallsManagerListenerBase {
         dumpCallsInCollection(pw, mCalls);
         pw.decreaseIndent();
 
-        pw.println("Active dialing, or connecting calls:");
+        pw.println("Connecting calls:");
         pw.increaseIndent();
-        dumpCallsInCollection(pw, mActiveDialingOrConnectingCalls);
+        dumpCallsInCollection(pw, mConnectingCalls);
+        pw.decreaseIndent();
+
+        pw.println("Active dialing calls:");
+        pw.increaseIndent();
+        dumpCallsInCollection(pw, mActiveOrDialingCalls);
         pw.decreaseIndent();
 
         pw.println("Ringing calls:");
@@ -582,8 +589,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private void onCallLeavingState(Call call, int state) {
         switch (state) {
             case CallState.ACTIVE:
+                onCallLeavingActiveOrDialing();
+                break;
             case CallState.CONNECTING:
-                onCallLeavingActiveDialingOrConnecting();
                 break;
             case CallState.RINGING:
             case CallState.SIMULATED_RINGING:
@@ -594,11 +602,11 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 onCallLeavingHold();
                 break;
             case CallState.PULLING:
-                onCallLeavingActiveDialingOrConnecting();
+                onCallLeavingActiveOrDialing();
                 break;
             case CallState.DIALING:
                 stopRingbackForCall(call);
-                onCallLeavingActiveDialingOrConnecting();
+                onCallLeavingActiveOrDialing();
                 break;
             case CallState.AUDIO_PROCESSING:
                 onCallLeavingAudioProcessing();
@@ -609,8 +617,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private void onCallEnteringState(Call call, int state) {
         switch (state) {
             case CallState.ACTIVE:
+                onCallEnteringActiveOrDialing();
+                break;
             case CallState.CONNECTING:
-                onCallEnteringActiveDialingOrConnecting();
                 break;
             case CallState.RINGING:
             case CallState.SIMULATED_RINGING:
@@ -620,15 +629,15 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 onCallEnteringHold();
                 break;
             case CallState.PULLING:
-                onCallEnteringActiveDialingOrConnecting();
+                onCallEnteringActiveOrDialing();
                 break;
             case CallState.DIALING:
-                onCallEnteringActiveDialingOrConnecting();
+                onCallEnteringActiveOrDialing();
                 playRingbackForCall(call);
                 break;
             case CallState.ANSWERED:
                 if (call.can(android.telecom.Call.Details.CAPABILITY_SPEED_UP_MT_AUDIO)) {
-                    onCallEnteringActiveDialingOrConnecting();
+                    onCallEnteringActiveOrDialing();
                 }
                 break;
             case CallState.AUDIO_PROCESSING:
@@ -653,8 +662,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
         }
     }
 
-    private void onCallLeavingActiveDialingOrConnecting() {
-        if (mActiveDialingOrConnectingCalls.size() == 0) {
+    private void onCallLeavingActiveOrDialing() {
+        if (mActiveOrDialingCalls.size() == 0) {
             mCallAudioModeStateMachine.sendMessageWithArgs(
                     CallAudioModeStateMachine.NO_MORE_ACTIVE_OR_DIALING_CALLS,
                     makeArgsForModeStateMachine());
@@ -677,8 +686,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
         }
     }
 
-    private void onCallEnteringActiveDialingOrConnecting() {
-        if (mActiveDialingOrConnectingCalls.size() == 1) {
+    private void onCallEnteringActiveOrDialing() {
+        if (mActiveOrDialingCalls.size() == 1) {
             mCallAudioModeStateMachine.sendMessageWithArgs(
                     CallAudioModeStateMachine.NEW_ACTIVE_OR_DIALING_CALL,
                     makeArgsForModeStateMachine());
@@ -703,16 +712,10 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private void updateForegroundCall() {
         Call oldForegroundCall = mForegroundCall;
-        if (mActiveDialingOrConnectingCalls.size() > 0) {
-            // Give preference for connecting calls over active/dialing for foreground-ness.
-            Call possibleConnectingCall = null;
-            for (Call call : mActiveDialingOrConnectingCalls) {
-                if (call.getState() == CallState.CONNECTING) {
-                    possibleConnectingCall = call;
-                }
-            }
-            mForegroundCall = possibleConnectingCall == null ?
-                    mActiveDialingOrConnectingCalls.iterator().next() : possibleConnectingCall;
+        if (mConnectingCalls.size() > 0) {
+            mForegroundCall = mConnectingCalls.iterator().next();
+        } else if (mActiveOrDialingCalls.size() > 0) {
+            mForegroundCall = mActiveOrDialingCalls.iterator().next();
         } else if (mRingingCalls.size() > 0) {
             mForegroundCall = mRingingCalls.iterator().next();
         } else if (mHoldingCalls.size() > 0) {
@@ -732,7 +735,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @NonNull
     private CallAudioModeStateMachine.MessageArgs makeArgsForModeStateMachine() {
         return new Builder()
-                .setHasActiveOrDialingCalls(mActiveDialingOrConnectingCalls.size() > 0)
+                .setHasActiveOrDialingCalls(mActiveOrDialingCalls.size() > 0)
                 .setHasRingingCalls(mRingingCalls.size() > 0)
                 .setHasHoldingCalls(mHoldingCalls.size() > 0)
                 .setHasAudioProcessingCalls(mAudioProcessingCalls.size() > 0)
@@ -768,7 +771,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             // If the call has the speed-up-mt-audio capability, treat answered state as active
             // for audio purposes.
             if (call.can(android.telecom.Call.Details.CAPABILITY_SPEED_UP_MT_AUDIO)) {
-                return mActiveDialingOrConnectingCalls;
+                return mActiveOrDialingCalls;
             }
             return mRingingCalls;
         }

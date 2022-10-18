@@ -1854,6 +1854,9 @@ public class CallsManager extends Call.ListenerBase
                         }
                     }
 
+                    setCallState(callToUse, CallState.CONNECTING,
+                            phoneAccountHandle == null ? "no-handle"
+                                    : phoneAccountHandle.toString());
                     callToUse.setState(
                             CallState.CONNECTING,
                             phoneAccountHandle == null ? "no-handle"
